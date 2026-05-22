@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Orders — Live Feed</title>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:       #0f0f0f;
+    --surface:  #171717;
+    --border:   #2a2a2a;
+    --text:     #e8e8e8;
+    --muted:    #666;
+    --pending:  #d4a84b;
+    --shipped:  #5b9cf6;
+    --delivered:#4aba7a;
+    --del:      #e05c5c;
+    --mono: 'IBM Plex Mono', monospace;
+    --sans: 'IBM Plex Sans', sans-serif;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    min-height: 100vh;
+  }
+
+  /* ── Header ── */
+  header {
+    border-bottom: 1px solid var(--border);
+    padding: 18px 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .brand {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    color: var(--text);
+  }
+
+  .conn-badge {
+    font-family: var(--mono);
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--muted);
+    transition: color 0.3s;
+  }
+
+  .conn-badge.live { color: var(--delivered); }
+
+  .conn-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--muted);
+    transition: background 0.3s;
+  }
+
+  .conn-badge.live .conn-dot {
+    background: var(--delivered);
+    animation: blink 2s infinite;
+  }
+
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.35} }
+
+  /* ── Layout ── */
+  main {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 40px 32px;
+    display: grid;
+    grid-template-columns: 1fr 340px;
+    gap: 32px;
+    align-items: start;
+  }
+
+  /* ── Section label ── */
+  .section-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 16px;
+  }
+
+  /* ── Orders table ── */
+  .orders-wrap {
+    overflow-x: auto;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  th {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    text-align: left;
+    padding: 0 0 10px;
+    border-bottom: 1px solid var(--border);
+    font-weight: 400;
+  }
+
+  td {
+    padding: 13px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    vertical-align: middle;
+  }
+
+  tr:last-child td { border-bottom: none; }
+
+  tr.flash td { animation: rowflash 1.2s ease-out; }
+
+  @keyframes rowflash {
+    0%   { background: rgba(91,156,246,0.12); }
+    100% { background: transparent; }
+  }
+
+  tr.flash-new td { animation: rowflash-new 1.2s ease-out; }
+
+  @keyframes rowflash-new {
+    0%   { background: rgba(74,186,122,0.12); }
+    100% { background: transparent; }
+  }
+
+  tr.flash-del td { animation: rowflash-del 0.8s ease-out forwards; }
+
+  @keyframes rowflash-del {
+    0%   { background: rgba(224,92,92,0.15); opacity: 1; }
+    100% { background: rgba(224,92,92,0.05); opacity: 0; }
+  }
+
+  .order-id {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    width: 48px;
+  }
+
+  .customer { font-weight: 500; }
+  .product  { color: #aaa; font-size: 12px; }
+
+  .status {
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 3px 9px;
+    border-radius: 3px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+  }
+
+  .status.pending   { color: var(--pending);   background: rgba(212,168,75,0.1); }
+  .status.shipped   { color: var(--shipped);   background: rgba(91,156,246,0.1); }
+  .status.delivered { color: var(--delivered); background: rgba(74,186,122,0.1); }
+
+  .time-cell {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    text-align: right;
+  }
+
+  .empty-state {
+    padding: 48px 0;
+    text-align: center;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  /* ── Right panel ── */
+  .right-panel { display: flex; flex-direction: column; gap: 28px; }
+
+  /* ── Event log ── */
+  .log-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    max-height: 300px;
+    overflow-y: auto;
+  }
+
+  .log-list::-webkit-scrollbar { width: 3px; }
+  .log-list::-webkit-scrollbar-track { background: transparent; }
+  .log-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .log-item {
+    display: flex;
+    gap: 10px;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--border);
+    animation: fadeIn 0.3s ease;
+  }
+
+  .log-item:last-child { border-bottom: none; }
+
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
+  .log-op {
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.05em;
+    padding: 2px 6px;
+    border-radius: 2px;
+    flex-shrink: 0;
+    align-self: flex-start;
+    margin-top: 1px;
+  }
+
+  .log-op.INSERT  { color: var(--delivered); background: rgba(74,186,122,0.1); }
+  .log-op.UPDATE  { color: var(--shipped);   background: rgba(91,156,246,0.1); }
+  .log-op.DELETE  { color: var(--del);       background: rgba(224,92,92,0.1); }
+
+  .log-text { font-size: 12px; color: #aaa; line-height: 1.5; }
+  .log-text strong { color: var(--text); font-weight: 500; }
+
+  .log-time {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+
+  .log-empty {
+    font-size: 12px;
+    color: var(--muted);
+    padding: 16px 0;
+    font-family: var(--mono);
+  }
+
+  /* ── Quick add form ── */
+  .form-block { display: flex; flex-direction: column; gap: 10px; }
+
+  input, select {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 13px;
+    padding: 9px 12px;
+    border-radius: 4px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+
+  input:focus, select:focus { border-color: #444; }
+  input::placeholder { color: var(--muted); }
+
+  select option { background: #1e1e1e; }
+
+  button {
+    width: 100%;
+    background: #e8e8e8;
+    color: #0f0f0f;
+    border: none;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    padding: 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+
+  button:hover { opacity: 0.85; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .form-msg {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    text-align: center;
+    min-height: 16px;
+  }
+  .form-msg.ok  { color: var(--delivered); }
+  .form-msg.err { color: var(--del); }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="brand">orders / live-feed</span>
+  <div class="conn-badge" id="connBadge">
+    <span class="conn-dot"></span>
+    <span id="connLabel">connecting...</span>
+  </div>
+</header>
+
+<main>
+  <!-- Left: orders table -->
+  <div>
+    <div class="section-label">Orders</div>
+    <div class="orders-wrap">
+      <table id="ordersTable">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Customer</th>
+            <th>Product</th>
+            <th>Status</th>
+            <th style="text-align:right">Updated</th>
+          </tr>
+        </thead>
+        <tbody id="ordersBody">
+          <tr><td colspan="5" class="empty-state">Loading orders...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Right: event log + add form -->
+  <div class="right-panel">
+
+    <div>
+      <div class="section-label">Event log</div>
+      <div class="log-list" id="logList">
+        <div class="log-empty">No events yet — waiting for changes.</div>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-label">Add order</div>
+      <div class="form-block">
+        <input type="text" id="fCustomer" placeholder="Customer name">
+        <input type="text" id="fProduct"  placeholder="Product name">
+        <select id="fStatus">
+          <option value="pending">pending</option>
+          <option value="shipped">shipped</option>
+          <option value="delivered">delivered</option>
+        </select>
+        <button id="addBtn" onclick="addOrder()">Add order</button>
+        <div class="form-msg" id="formMsg"></div>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<script>
+const API = 'http://localhost:3000';
+let orders = [];  // local state
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function fmt(ts) {
+  const d = new Date(ts);
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function statusHTML(s) {
+  return `<span class="status ${s}">${s}</span>`;
+}
+
+// ── Render table ─────────────────────────────────────────────────────────────
+
+function renderTable() {
+  const tbody = document.getElementById('ordersBody');
+  if (orders.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="5" class="empty-state">No orders yet.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = orders.map(o => `
+    <tr data-id="${o.id}">
+      <td class="order-id">#${o.id}</td>
+      <td class="customer">${o.customer_name}</td>
+      <td class="product">${o.product_name}</td>
+      <td>${statusHTML(o.status)}</td>
+      <td class="time-cell">${fmt(o.updated_at)}</td>
+    </tr>
+  `).join('');
+}
+
+// ── Flash a row ───────────────────────────────────────────────────────────────
+
+function flashRow(id, cls) {
+  const row = document.querySelector(`tr[data-id="${id}"]`);
+  if (!row) return;
+  row.classList.add(cls);
+  row.addEventListener('animationend', () => row.classList.remove(cls), { once: true });
+}
+
+// ── Log event ────────────────────────────────────────────────────────────────
+
+function logEvent(op, data) {
+  const list = document.getElementById('logList');
+  const empty = list.querySelector('.log-empty');
+  if (empty) empty.remove();
+
+  const item = document.createElement('div');
+  item.className = 'log-item';
+
+  let text = '';
+  if (op === 'INSERT') text = `<strong>${data.customer_name}</strong> — "${data.product_name}" added as <strong>${data.status}</strong>`;
+  if (op === 'UPDATE') text = `Order #${data.id} status → <strong>${data.status}</strong>`;
+  if (op === 'DELETE') text = `Order #${data.id} removed (<strong>${data.product_name}</strong>)`;
+
+  item.innerHTML = `
+    <span class="log-op ${op}">${op}</span>
+    <span class="log-text">${text}</span>
+    <span class="log-time">${fmt(new Date())}</span>
+  `;
+
+  list.prepend(item);
+
+  // Keep last 20 entries
+  const items = list.querySelectorAll('.log-item');
+  if (items.length > 20) items[items.length - 1].remove();
+}
+
+// ── Apply incoming event to local state ──────────────────────────────────────
+
+function applyEvent(op, data) {
+  if (op === 'INSERT') {
+    orders.unshift(data);
+    renderTable();
+    flashRow(data.id, 'flash-new');
+  }
+
+  if (op === 'UPDATE') {
+    const idx = orders.findIndex(o => o.id === data.id);
+    if (idx !== -1) orders[idx] = data;
+    renderTable();
+    flashRow(data.id, 'flash');
+  }
+
+  if (op === 'DELETE') {
+    const row = document.querySelector(`tr[data-id="${data.id}"]`);
+    if (row) {
+      row.classList.add('flash-del');
+      setTimeout(() => {
+        orders = orders.filter(o => o.id !== data.id);
+        renderTable();
+      }, 700);
+    } else {
+      orders = orders.filter(o => o.id !== data.id);
+      renderTable();
+    }
+  }
+
+  logEvent(op, data);
+}
+
+// ── Load initial orders ───────────────────────────────────────────────────────
+
+async function loadOrders() {
+  try {
+    const res = await fetch(`${API}/api/orders`);
+    orders = await res.json();
+    renderTable();
+  } catch {
+    document.getElementById('ordersBody').innerHTML =
+      `<tr><td colspan="5" class="empty-state">Could not reach server.</td></tr>`;
+  }
+}
+
+// ── Add order ────────────────────────────────────────────────────────────────
+
+async function addOrder() {
+  const customer_name = document.getElementById('fCustomer').value.trim();
+  const product_name  = document.getElementById('fProduct').value.trim();
+  const status        = document.getElementById('fStatus').value;
+  const msg           = document.getElementById('formMsg');
+  const btn           = document.getElementById('addBtn');
+
+  if (!customer_name || !product_name) {
+    msg.textContent = 'Both fields are required.';
+    msg.className = 'form-msg err';
+    return;
+  }
+
+  btn.disabled = true;
+  msg.textContent = '';
+
+  try {
+    const res = await fetch(`${API}/api/orders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ customer_name, product_name, status }),
+    });
+
+    if (!res.ok) throw new Error('Server error');
+
+    document.getElementById('fCustomer').value = '';
+    document.getElementById('fProduct').value  = '';
+    msg.textContent = 'Order added.';
+    msg.className = 'form-msg ok';
+    setTimeout(() => { msg.textContent = ''; }, 3000);
+
+  } catch {
+    msg.textContent = 'Failed to add order.';
+    msg.className = 'form-msg err';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── Socket.IO ─────────────────────────────────────────────────────────────────
+
+const socket = io(API, { transports: ['websocket', 'polling'] });
+const badge  = document.getElementById('connBadge');
+const label  = document.getElementById('connLabel');
+
+socket.on('connect', () => {
+  badge.classList.add('live');
+  label.textContent = 'live';
+});
+
+socket.on('disconnect', () => {
+  badge.classList.remove('live');
+  label.textContent = 'disconnected';
+});
+
+socket.on('order_update', ({ op, data }) => {
+  applyEvent(op, data);
+});
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+
+loadOrders();
+</script>
+</body>
+</html>
